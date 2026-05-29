@@ -1,65 +1,95 @@
 import streamlit as st
-import pypdf
+import pdfplumber
 import edge_tts
 import asyncio
 import os
+import tempfile
 
-st.set_page_config(page_title="قارئ الكتب الذكي", page_icon="📚", layout="centered")
+# إعدادات الصفحة الاحترافية
+st.set_page_config(page_title="AudioBook Pro AI", page_icon="🎙️", layout="wide")
 
-st.title("📚 قارئ الكتب الصوتي الذكي")
-st.write("قم برفع أي كتاب بصيغة PDF وسأقوم بقراءته لك بصوت أنثوي هادئ وباللغة العربية الفصحى.")
+# تصميم الواجهة بألوان متناسقة لتسهيل القراءة من الهاتف
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stButton>button { width: 100%; border-radius: 10px; height: 3em; background-color: #38bdf8; color: black; font-weight: bold; }
+    .stProgress > div > div > div > div { background-color: #38bdf8; }
+    </style>
+    """, unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("اختر ملف الكتاب (PDF)", type=["pdf"])
+st.title("🎙️ قارئ الكتب الذكي (النسخة الاحترافية)")
+st.info("هذه النسخة تدعم الكتب الطويلة وتستخدم محرك معالجة متقدم لضمان عدم انقطاع الصوت.")
 
+# رفع الملف
+uploaded_file = st.file_uploader("ارفع كتابك (PDF)", type=["pdf"])
+
+# خيارات الصوت في القائمة الجانبية
 voices = {
-    "سلمى (نبرة مصرية هادئة ومميزة)": "ar-EG-SalmaNeural",
-    "فاطمة (نبرة إماراتية واضحة وطبيعية)": "ar-AE-FatimaNeural",
-    "أمينة (نبرة جزائرية وقورة)": "ar-DZ-AminaNeural"
+    "سلمى (مصر - هادئ وطبيعي)": "ar-EG-SalmaNeural",
+    "فاطمة (الإمارات - واضح واحترافي)": "ar-AE-FatimaNeural",
+    "حمد (السعودية - فصيح ووقور)": "ar-SA-HamedNeural"
 }
-selected_voice_label = st.selectbox("اختر نبرة الصوت الأنثوي المفضلة:", list(voices.keys()))
-selected_voice = voices[selected_voice_label]
+selected_voice = st.sidebar.selectbox("اختر نبرة الصوت المفضل:", list(voices.keys()))
+rate = st.sidebar.slider("سرعة القراءة", -50, 50, 0)
 
-async def generate_speech(text, voice, output_path):
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save(output_path)
-
-if uploaded_file is not None:
-    with st.spinner("جاري قراءة ملف PDF..."):
-        reader = pypdf.PdfReader(uploaded_file)
-        num_pages = len(reader.pages)
-        st.success(f"تمت قراءة الكتاب! يحتوي على {num_pages} صفحة.")
-        
-        st.write("---")
-        st.subheader("حدد نطاق الصفحات المراد قراءتها:")
-        col1, col2 = st.columns(2)
-        with col1:
-            page_start = st.number_input("من الصفحة:", min_value=1, max_value=num_pages, value=1)
-        with col2:
-            page_end = st.number_input("إلى الصفحة:", min_value=page_start, max_value=num_pages, value=min(page_start + 2, num_pages))
-        
-        full_text = ""
-        for i in range(page_start - 1, page_end):
-            page_text = reader.pages[i].extract_text()
-            if page_text:
-                full_text += page_text + "\n"
+# دالة المعالجة المقسمة لمنع مشكلة الـ 15 ثانية ومهلة الاتصال
+async def process_text_to_speech(full_text, voice, rate_str):
+    # تقسيم النص إلى أجزاء (كل جزء 3000 حرف تقريباً) لضمان الاستقرار الكامل
+    chunks = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
+    combined_audio = b""
     
-    if full_text.strip():
-        st.subheader("معاينة النص:")
-        st.text_area("النص الحالي جاهز للقراءة:", full_text[:1500] + ("..." if len(full_text) > 1500 else ""), height=200)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for idx, chunk in enumerate(chunks):
+        status_text.text(f"جاري معالجة وقراءة الجزء {idx+1} من {len(chunks)}...")
+        communicate = edge_tts.Communicate(chunk, voices[voice], rate=f"{rate_str:+}%")
         
-        if st.button("ابدأ القراءة الصوتية 🎧"):
-            with st.spinner("جاري توليد الصوت... يرجى الانتظار."):
-                output_audio = "audiobook.mp3"
-                try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(generate_speech(full_text, selected_voice, output_audio))
-                    
-                    st.audio(output_audio, format="audio/mp3")
-                    
-                    with open(output_audio, "rb") as file:
-                        st.download_button(label="تحميل الملف الصوتي MP3", data=file, file_name="arabic_audiobook.mp3", mime="audio/mp3")
-                except Exception as e:
-                    st.error(f"حدث خطأ أثناء معالجة الصوت: {e}")
+        # استخدام ملف مؤقت بشكل آمن لكل جزء صفتي
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            await communicate.save(tmp.name)
+            with open(tmp.name, "rb") as f:
+                combined_audio += f.read()
+            os.remove(tmp.name)
+            
+        progress_bar.progress((idx + 1) / len(chunks))
+        
+    status_text.text("✅ تم الانتهاء من معالجة كافة الأجزاء!")
+    return combined_audio
+
+if uploaded_file:
+    with st.spinner("جاري تحليل محتوى الكتاب واستخراج النصوص العربية بدقة..."):
+        all_text = ""
+        # استخدام pdfplumber للحصول على أفضل دقة قراءة للغة العربية والتشكيل
+        with pdfplumber.open(uploaded_file) as pdf:
+            pages = pdf.pages
+            st.sidebar.success(f"إجمالي صفحات الكتاب: {len(pages)}")
+            
+            # تحديد نطاق الصفحات المراد قراءتها لتوفير الموارد
+            start_p = st.sidebar.number_input("ابدأ من صفحة رقم:", 1, len(pages), 1)
+            end_p = st.sidebar.number_input("إلى صفحة رقم:", start_p, len(pages), min(start_p+5, len(pages)))
+            
+            for i in range(start_p-1, end_p):
+                page_content = pages[i].extract_text()
+                if page_content:
+                    all_text += page_content + "\n"
+
+    if all_text.strip():
+        st.subheader("📝 النص الجاري تجهيزه للقراءة:")
+        st.text_area("معاينة النص المستخرج:", all_text, height=250)
+        
+        if st.button("🔊 ابدأ توليد الكتاب الصوتي الآن"):
+            try:
+                # إدارة حلقة الأحداث (Event Loop) لـ asyncio بأمان داخل سحاب Streamlit
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                audio_data = loop.run_until_complete(process_text_to_speech(all_text, selected_voice, rate))
+                
+                st.success("✅ تم توليد ملفك الصوتي بنجاح وبأعلى جودة!")
+                st.audio(audio_data, format="audio/mp3")
+                
+                st.download_button("📥 تحميل الكتاب الصوتي الكامل (MP3)", audio_data, "my_audiobook.mp3", "audio/mp3")
+            except Exception as e:
+                st.error(f"حدث خطأ فني أثناء المعالجة: {str(e)}")
     else:
-        st.error("لم نتمكن من استخراج نصوص مقروءة من هذه الصفحات.")
+        st.error("لم نتمكن من استخراج أي نصوص من الصفحات المحددة. تأكد من أن ملف الـ PDF يحتوي على نصوص رقمية وليس مجرد صور ممسوحة ضوئيًا (Scanner).")
